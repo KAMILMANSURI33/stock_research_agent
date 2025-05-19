@@ -17,7 +17,21 @@ An intelligent agent system for analyzing and summarizing stock-related news usi
 pip install -r requirements.txt
 ```
 
-2. Download a Llama model (e.g., Llama-2-7B-Q4) and place it in the `models` directory
+2. Set up the model:
+   - Create a `models` directory in the project root:
+   ```bash
+   mkdir models
+   ```
+   - Download the TinyLlama model:
+   ```bash
+   # Option 1: Using wget
+   wget https://huggingface.co/TheBloke/TinyLlama-2-1b-miniguanaco-GGUF/resolve/main/tinyllama-2-1b-miniguanaco.Q4_K_M.gguf -P models/
+
+   # Option 2: Using curl
+   curl -L https://huggingface.co/TheBloke/TinyLlama-2-1b-miniguanaco-GGUF/resolve/main/tinyllama-2-1b-miniguanaco.Q4_K_M.gguf --output models/tinyllama-2-1b-miniguanaco.Q4_K_M.gguf
+   ```
+   
+   Note: The model file is approximately 1.1GB. Make sure you have sufficient disk space and a stable internet connection.
 
 3. Create a `.env` file with your API keys:
 ```
@@ -47,3 +61,13 @@ The system uses a multi-agent architecture:
 - Stock Data Agent: Fetches market data and financial information
 - News Processing Agent: Extracts and processes article content
 - LLM Agent: Generates summaries using Llama model
+
+## Model Information
+
+The project uses the TinyLlama-2-1b-miniguanaco model, which is a lightweight version of Llama optimized for efficiency:
+- Model: TinyLlama-2-1b-miniguanaco
+- Format: GGUF (Q4_K_M quantization)
+- Size: ~1.1GB
+- Source: [TheBloke/TinyLlama-2-1b-miniguanaco-GGUF](https://huggingface.co/TheBloke/TinyLlama-2-1b-miniguanaco-GGUF)
+
+This model provides a good balance between performance and resource usage, making it suitable for running on consumer hardware.
