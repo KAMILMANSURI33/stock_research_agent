@@ -71,3 +71,20 @@ The project uses the TinyLlama-2-1b-miniguanaco model, which is a lightweight ve
 - Source: [TheBloke/TinyLlama-2-1b-miniguanaco-GGUF](https://huggingface.co/TheBloke/TinyLlama-2-1b-miniguanaco-GGUF)
 
 This model provides a good balance between performance and resource usage, making it suitable for running on consumer hardware.
+
+## Running Tests
+
+To run the test suite:
+
+```bash
+# Run all tests
+python -m pytest tests/
+
+# Run specific test file
+python -m pytest tests/test_api.py
+
+# Run tests with verbose output
+python -m pytest tests/ -v
+```
+
+Make sure you have pytest installed (`pip install pytest`) and the model is properly set up before running the tests.
