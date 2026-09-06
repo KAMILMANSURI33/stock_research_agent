@@ -35,6 +35,7 @@ def client(monkeypatch):
         return {
             "stock_data": STOCK_DATA,
             "news_articles": NEWS_ARTICLES,
+            "articles_retrieved": len(NEWS_ARTICLES),
             "summary": SUMMARY,
             "timestamp": input_data.get("timestamp"),
         }
@@ -55,6 +56,7 @@ def test_analyze_returns_expected_payload(client):
     assert body["stock_data"] == STOCK_DATA
     assert body["news_articles"] == NEWS_ARTICLES
     assert body["summary"] == SUMMARY
+    assert body["articles_retrieved"] == len(NEWS_ARTICLES)
     assert body["timestamp"]
 
 
@@ -66,6 +68,7 @@ def test_symbol_reaches_the_orchestrator(client, monkeypatch):
         return {
             "stock_data": STOCK_DATA,
             "news_articles": NEWS_ARTICLES,
+            "articles_retrieved": len(NEWS_ARTICLES),
             "summary": SUMMARY,
             "timestamp": input_data.get("timestamp"),
         }
@@ -86,6 +89,7 @@ def test_days_defaults_to_one(client, monkeypatch):
         return {
             "stock_data": STOCK_DATA,
             "news_articles": NEWS_ARTICLES,
+            "articles_retrieved": len(NEWS_ARTICLES),
             "summary": SUMMARY,
             "timestamp": input_data.get("timestamp"),
         }
@@ -164,6 +168,7 @@ def test_live_server_analyze():
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) >= {"stock_data", "news_articles", "summary", "timestamp"}
+    assert set(body) >= {"stock_data", "news_articles", "articles_retrieved", "summary", "timestamp"}
+    assert body["articles_retrieved"] == len(body["news_articles"])
     assert isinstance(body["news_articles"], list)
     assert isinstance(body["summary"], str) and body["summary"].strip()

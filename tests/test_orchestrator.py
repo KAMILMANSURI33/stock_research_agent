@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from agents.llm_agent import NO_ARTICLES_SUMMARY
 from agents.orchestrator import Orchestrator
 
 # Each stubbed sub-agent sleeps this long. Run sequentially the two independent
@@ -75,6 +76,7 @@ async def test_results_map_to_correct_keys():
 
     assert result["stock_data"] == STOCK_RESULT
     assert result["news_articles"] == NEWS_RESULT
+    assert result["articles_retrieved"] == len(NEWS_RESULT)
     assert result["summary"] == SUMMARY_RESULT
 
 
@@ -113,3 +115,31 @@ async def test_sub_agent_failure_propagates():
 
     with pytest.raises(RuntimeError, match="upstream stock API is down"):
         await orchestrator.process({"symbol": "AAPL", "days": 1})
+
+
+@pytest.mark.asyncio
+async def test_empty_news_yields_zero_count_and_no_generated_summary():
+    """End to end with the real LLMAgent: no articles, no invented summary.
+
+    LLMAgent is left unstubbed here on purpose -- the empty-article path must
+    return before the model is ever loaded, so this needs no model file.
+    """
+    orchestrator, _ = _make_orchestrator()
+
+    async def no_news(input_data):
+        return []
+
+    orchestrator.web_search_agent.process = no_news
+    orchestrator.llm_agent = type(orchestrator.llm_agent)()  # fresh, unstubbed
+
+    async def fail_initialize():
+        raise AssertionError("model must not be loaded when there are no articles")
+
+    orchestrator.llm_agent.initialize = fail_initialize
+
+    result = await orchestrator.process({"symbol": "AAPL", "days": 1})
+
+    assert result["articles_retrieved"] == 0
+    assert result["news_articles"] == []
+    assert result["summary"] == NO_ARTICLES_SUMMARY.format(symbol="AAPL")
+    assert orchestrator.llm_agent.model is None

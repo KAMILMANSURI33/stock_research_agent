@@ -28,6 +28,7 @@ class AnalysisRequest(BaseModel):
 class AnalysisResponse(BaseModel):
     stock_data: dict
     news_articles: list
+    articles_retrieved: int
     summary: str
     timestamp: str
 

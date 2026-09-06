@@ -41,6 +41,9 @@ class Orchestrator(BaseAgent):
         return {
             'stock_data': stock_data,
             'news_articles': news_data,
+            # Explicit so a caller can tell a grounded summary from an empty
+            # one without re-deriving it from the articles list.
+            'articles_retrieved': len(news_data),
             'summary': summary,
             'timestamp': input_data.get('timestamp', None)
         }
