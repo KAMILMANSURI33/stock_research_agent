@@ -199,11 +199,18 @@ def _expands_source_acronym(phrase: str, src_upper: str) -> bool:
     return bool(re.search(rf"\b{re.escape(initials)}\b", src_upper))
 
 
-def _sentence_initial_only(text: str, candidates: set) -> set:
-    """Candidates that only ever appear as the first word of a sentence.
+def _sentence_initial_only(text: str, candidates: set, corpus: str) -> set:
+    """Candidates capitalised only because they open a sentence.
 
     "Investors will watch..." capitalises Investors for position, not because
-    it names anything. A real entity almost always also appears mid-sentence.
+    it names anything. But position alone is not enough evidence: an entity
+    that happens to appear only at the start of a sentence -- "Apple lagged."
+    -- would be discarded, and missing real entity drift is a worse error for
+    this metric than admitting a false positive.
+
+    So require corroboration: drop the candidate only if the same word also
+    occurs in lowercase somewhere, which is what a common noun does and what a
+    proper name does not.
     """
     initial, medial = set(), set()
     for sentence in _SENTENCE_SPLIT.split(text):
@@ -213,7 +220,16 @@ def _sentence_initial_only(text: str, candidates: set) -> set:
             continue
         initial.add(words[0])
         medial.update(words[1:])
-    return {c for c in candidates if c in initial and c not in medial}
+
+    # Case-sensitive search for the lowercase form. Lowercasing the corpus
+    # first would match the candidate's own capitalised occurrence, so every
+    # candidate would look corroborated and nothing would ever be filtered.
+    positional = set()
+    for c in candidates:
+        if c in initial and c not in medial:
+            if re.search(rf"\b{re.escape(c.lower())}\b", corpus):
+                positional.add(c)
+    return positional
 
 
 def entity_fidelity(summary: str, requested: str, sources: str) -> Dict[str, Any]:
@@ -244,7 +260,7 @@ def entity_fidelity(summary: str, requested: str, sources: str) -> Dict[str, Any
     # 2. capitalised only because it starts a sentence. Applied to single words
     #    only: a multi-word phrase is not capitalised for position.
     single = {c for c in unsourced if " " not in c}
-    unsourced -= _sentence_initial_only(summary, single)
+    unsourced -= _sentence_initial_only(summary, single, summary + " " + sources)
     # 3. last resort: known non-company vocabulary
     # 3. last resort: known non-company vocabulary. A multi-word phrase counts
     #    as filtered only if every one of its words is non-company vocabulary,

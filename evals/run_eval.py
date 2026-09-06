@@ -92,7 +92,7 @@ def extract_articles(payload: dict) -> list[str]:
 
 
 def run(base_url: str, tickers: list[str], days: int, repeats: int, timeout: int,
-        temperature: float | None = None) -> list[dict]:
+        temperature: float | None = None, store_context: bool = False) -> list[dict]:
     records = []
     total = len(tickers) * repeats
 
@@ -151,6 +151,11 @@ def run(base_url: str, tickers: list[str], days: int, repeats: int, timeout: int
             summary.encode("utf-8")
         ).hexdigest()[:12]
         record["repeat_index"] = (i - 1) // len(tickers)
+        if store_context:
+            # Bulky, so opt-in. Storing it is what makes a run re-scorable after
+            # a metric changes, without spending upstream quota to regenerate
+            # data that has not changed.
+            record["prompt_context"] = articles
         record["summary"] = summary
         records.append(record)
 
@@ -423,6 +428,41 @@ def to_markdown(agg: dict, days: int) -> str:
     return "\n".join(lines)
 
 
+class MissingStoredContext(RuntimeError):
+    """A stored run cannot be re-scored because the excerpts were not kept."""
+
+
+def rescore(raw_path: Path) -> dict:
+    """Recompute every metric over a stored run with the current metric code.
+
+    Makes no API calls. Scores are recomputed from the stored excerpts rather
+    than reused, so a metric fix applies retroactively to runs already paid for.
+    """
+    payload = json.loads(raw_path.read_text())
+    records = payload["records"] if isinstance(payload, dict) else payload
+
+    ok = [r for r in records if r.get("ok")]
+    without = [r for r in ok if "prompt_context" not in r]
+    if without:
+        raise MissingStoredContext(
+            f"{len(without)} of {len(ok)} successful records have no "
+            "prompt_context, so they cannot be re-scored. The run must be made "
+            "with --store-context. Re-scoring from the summary alone would "
+            "silently compare metrics against different source text."
+        )
+
+    for record in ok:
+        articles = record["prompt_context"]
+        rescored = score_one(record["summary"], articles, record["ticker"])
+        record.update(rescored)
+
+    payload = payload if isinstance(payload, dict) else {"records": records}
+    payload["records"] = records
+    payload["aggregate"] = aggregate(records)
+    payload["rescored"] = True
+    return payload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://localhost:8000")
@@ -431,6 +471,13 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=1,
                         help="runs per ticker; >1 measures run-to-run variance")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--store-context", action="store_true",
+                        help="persist the prompt excerpts in the raw records so "
+                             "the run can be re-scored later without API calls")
+    parser.add_argument("--rescore", metavar="RAW_JSON",
+                        help="recompute every metric over a stored run using the "
+                             "current metric code, then rewrite summary.md. "
+                             "Makes no API calls; requires --store-context data")
     parser.add_argument("--temperature", type=float, default=None,
                         help="override the service temperature for this run; "
                              "omit to use the configured default")
@@ -439,12 +486,31 @@ def main() -> int:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    if args.rescore:
+        raw_path = Path(args.rescore)
+        try:
+            payload = rescore(raw_path)
+        except MissingStoredContext as exc:
+            print(f"Cannot re-score {raw_path}:\n  {exc}")
+            return 1
+        agg = payload["aggregate"]
+        days_used = (payload.get("config") or {}).get("days", args.days)
+        out = raw_path.with_name(raw_path.stem + "_rescored.json")
+        out.write_text(json.dumps(payload, indent=2))
+        markdown = to_markdown(agg, days_used)
+        (RESULTS_DIR / "summary.md").write_text(markdown + "\n")
+        print(f"Re-scored {len([r for r in payload['records'] if r.get('ok')])} "
+              f"records with current metric code. No API calls made.\n")
+        print(markdown)
+        print(f"\nRe-scored records: {out}")
+        return 0
+
     temp_str = "service default" if args.temperature is None else str(args.temperature)
     print(f"Evaluating {len(args.tickers)} tickers x {args.repeats} "
           f"against {args.base_url} (temperature: {temp_str})\n")
 
     records = run(args.base_url, args.tickers, args.days, args.repeats,
-                  args.timeout, args.temperature)
+                  args.timeout, args.temperature, args.store_context)
 
     if not any(r.get("ok") for r in records):
         print("\nEvery run failed. Is the service up? Check: "
