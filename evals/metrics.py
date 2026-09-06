@@ -140,14 +140,30 @@ _NON_COMPANY = {
     "SUNDAY",
     # capitalised English that survives sentence-initial filtering
     "THE", "AND", "FOR", "NEW", "ALL", "ANALYSTS", "INVESTORS", "EARNINGS",
-    "REVENUE", "OVERALL", "ADDITIONALLY", "HOWEVER", "CONCLUSION", "SUMMARY",
-    "KEY", "FACTS", "METRICS", "OUTLOOK", "STREET", "WALL",
+    "REVENUE", "CONCLUSION", "SUMMARY", "KEY", "FACTS", "METRICS", "OUTLOOK",
+    # discourse markers: capitalised because they open a clause, never entities
+    "ACCORDING", "HOWEVER", "OVERALL", "ADDITIONALLY", "MOREOVER",
+    "FURTHERMORE", "MEANWHILE", "NEVERTHELESS", "THEREFORE", "CONSEQUENTLY",
+    "FINALLY", "NOTABLY", "SEPARATELY", "ELSEWHERE", "DESPITE", "ALTHOUGH",
+    "WHILE", "SINCE", "DURING", "FOLLOWING", "GIVEN", "THIS", "THAT", "THESE",
+    "THOSE", "THERE", "THEIR", "THEY", "WITH", "WITHOUT", "AFTER", "BEFORE",
+    "BOTH", "EACH", "MOST", "MANY", "SOME", "OTHER", "OTHERS", "SUCH",
 }
 
 # Title Case (Apple, Nvidia) and ALL CAPS runs (AAPL, IBM) are both how a
 # company can appear. Matching only ALL CAPS was what produced false positives
 # on acronyms while missing "Apple" entirely.
-_TITLE_CASE = re.compile(r"\b[A-Z][a-z]{2,}\b")
+# Match Title Case *sequences* as single units. Matching word by word split
+# "Dow Jones Industrial Average" into four candidates, none of which is an
+# organisation on its own, and each of which then failed the source check
+# separately. Internal lowercase connectives are allowed so "Standard & Poor's"
+# and "Bank of America" survive intact.
+_TITLE_WORD = r"[A-Z][a-z]+(?:['\u2019][a-z]+)?"
+_TITLE_PHRASE = re.compile(
+    # Only "of" and "&" join a name across a lowercase token. Allowing "and"
+    # merged "Apple and Bank of America" into a single phantom entity.
+    rf"\b{_TITLE_WORD}(?:\s+(?:&|of)\s+{_TITLE_WORD}|\s+{_TITLE_WORD})*"
+)
 _ALL_CAPS = re.compile(r"\b[A-Z]{2,6}\b")
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -182,14 +198,24 @@ def entity_fidelity(summary: str, requested: str, sources: str) -> Dict[str, Any
     requested = requested.upper()
     src_upper = sources.upper()
 
-    candidates = set(_TITLE_CASE.findall(summary)) | set(_ALL_CAPS.findall(summary))
+    phrases = {m.group(0).strip() for m in _TITLE_PHRASE.finditer(summary)}
+    candidates = {p for p in phrases if p} | set(_ALL_CAPS.findall(summary))
 
     # 1. anything the sources actually contain is sourced, by definition
     unsourced = {c for c in candidates if c.upper() not in src_upper}
-    # 2. capitalised only because it starts a sentence
-    unsourced -= _sentence_initial_only(summary, unsourced)
+    # 2. capitalised only because it starts a sentence. Applied to single words
+    #    only: a multi-word phrase is not capitalised for position.
+    single = {c for c in unsourced if " " not in c}
+    unsourced -= _sentence_initial_only(summary, single)
     # 3. last resort: known non-company vocabulary
-    unsourced = {c for c in unsourced if c.upper() not in _NON_COMPANY}
+    # 3. last resort: known non-company vocabulary. A multi-word phrase counts
+    #    as filtered only if every one of its words is non-company vocabulary,
+    #    so "Bank of America" survives while "However The Company" does not.
+    def _all_words_generic(candidate: str) -> bool:
+        words = [w for w in re.split(r"[\s&]+", candidate) if w]
+        return all(w.upper() in _NON_COMPANY for w in words)
+
+    unsourced = {c for c in unsourced if not _all_words_generic(c)}
     unsourced.discard(requested)
 
     return {

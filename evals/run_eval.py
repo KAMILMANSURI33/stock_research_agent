@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import statistics
 import sys
 import time
@@ -33,7 +34,8 @@ DEFAULT_TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "JPM", "XOM", "PFE", "WMT"]
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
-def call_api(base_url: str, ticker: str, days: int, timeout: int) -> tuple[dict | None, float, str | None]:
+def call_api(base_url: str, ticker: str, days: int, timeout: int,
+             temperature: float | None = None) -> tuple[dict | None, float, str | None]:
     """Returns (payload, latency_seconds, error)."""
     start = time.perf_counter()
     try:
@@ -45,6 +47,8 @@ def call_api(base_url: str, ticker: str, days: int, timeout: int) -> tuple[dict 
                 # Score against what the model actually received, not what was
                 # retrieved. Without this the response omits prompt_context.
                 "include_prompt_context": True,
+                # omitted entirely when not set, so the service default applies
+                **({"temperature": temperature} if temperature is not None else {}),
             },
             timeout=timeout,
         )
@@ -87,13 +91,14 @@ def extract_articles(payload: dict) -> list[str]:
     return [a for a in payload["prompt_context"] if a and a.strip()]
 
 
-def run(base_url: str, tickers: list[str], days: int, repeats: int, timeout: int) -> list[dict]:
+def run(base_url: str, tickers: list[str], days: int, repeats: int, timeout: int,
+        temperature: float | None = None) -> list[dict]:
     records = []
     total = len(tickers) * repeats
 
     for i, ticker in enumerate(tickers * repeats, start=1):
         print(f"[{i}/{total}] {ticker} ... ", end="", flush=True)
-        payload, latency, error = call_api(base_url, ticker, days, timeout)
+        payload, latency, error = call_api(base_url, ticker, days, timeout, temperature)
 
         if error:
             print(f"FAILED ({error})")
@@ -135,6 +140,17 @@ def run(base_url: str, tickers: list[str], days: int, repeats: int, timeout: int
             else None
         )
         record["stock_data_source"] = payload.get("stock_data_source")
+        record["temperature"] = payload.get("temperature")
+        # Fingerprint of the exact text the model received. At temperature 0
+        # an identical fingerprint must yield an identical summary, so this
+        # separates sampling noise from the news feed changing between rounds.
+        record["prompt_fingerprint"] = hashlib.sha256(
+            "\x00".join(articles).encode("utf-8")
+        ).hexdigest()[:12]
+        record["summary_fingerprint"] = hashlib.sha256(
+            summary.encode("utf-8")
+        ).hexdigest()[:12]
+        record["repeat_index"] = (i - 1) // len(tickers)
         record["summary"] = summary
         records.append(record)
 
@@ -162,6 +178,47 @@ def _median(values: list[float]) -> float | None:
 
 def _fmt_pct(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.0%}"
+
+
+_SPREAD_METRICS = [
+    ("numeric_grounding_rate", "Numeric grounding"),
+    ("entities_clean_rate", "Entity fidelity"),
+    ("coverage_rate", "Article coverage"),
+    ("extractive_rate", "Extractive rate"),
+    ("latency_s", "Latency (s)"),
+]
+
+
+def per_repeat_spread(records: list[dict]) -> dict:
+    """Mean and range of each metric across repeat rounds.
+
+    The spread is the finding. A single round of three tickers moved pooled
+    grounding by 18 points between two runs of identical code, so a lone mean
+    overstates how much the number can be trusted.
+    """
+    ok = [r for r in records if r.get("ok")]
+    rounds = sorted({r.get("repeat_index", 0) for r in ok})
+    out = {}
+    for key, label in _SPREAD_METRICS:
+        per_round = []
+        for rnd in rounds:
+            vals = [r.get(key) for r in ok if r.get("repeat_index", 0) == rnd]
+            vals = [v for v in vals if v is not None]
+            if key == "entities_clean_rate":
+                vals = [1.0 if r.get("entities_clean") else 0.0
+                        for r in ok if r.get("repeat_index", 0) == rnd]
+            if vals:
+                per_round.append(statistics.mean(vals))
+        if per_round:
+            out[key] = {
+                "label": label,
+                "rounds": [round(v, 4) for v in per_round],
+                "mean": statistics.mean(per_round),
+                "min": min(per_round),
+                "max": max(per_round),
+                "spread": max(per_round) - min(per_round),
+            }
+    return out
 
 
 def aggregate(records: list[dict]) -> dict:
@@ -224,6 +281,9 @@ def aggregate(records: list[dict]) -> dict:
             if (r.get("coverage_rate") or 0) < 0.6 and r.get("drop_rate")
         ],
         "failures": [{"ticker": r["ticker"], "error": r.get("error")} for r in failed],
+        "temperature": next((r.get("temperature") for r in ok if r.get("temperature") is not None), None),
+        "repeats": len({r.get("repeat_index", 0) for r in ok}),
+        "spread": per_repeat_spread(records),
     }
 
 
@@ -241,7 +301,6 @@ def to_markdown(agg: dict, days: int) -> str:
         f"{_fmt_pct(agg['numeric_grounding_rate'])} ({agg['numbers_total']} figures checked) |",
         f"| Entity fidelity (no entity named that is absent from sources) | "
         f"{_fmt_pct(agg['entities_clean_rate'])} |",
-        f"| Requested ticker named in summary | {_fmt_pct(agg['requested_ticker_rate'])} |",
         f"| Article coverage (retrieved articles reflected in summary) | {_fmt_pct(agg['coverage_rate'])} |",
         f"| Extractive rate (8-grams copied verbatim) | {_fmt_pct(agg['extractive_rate'])} |",
         f"| Degenerate outputs (looping or collapsed) | {_fmt_pct(agg['degenerate_rate'])} |",
@@ -256,6 +315,29 @@ def to_markdown(agg: dict, days: int) -> str:
     ]
     if agg.get("latency_p90_s"):
         lines.append(f"| p90 latency | {agg['latency_p90_s']:.1f} s |")
+
+    spread = agg.get("spread") or {}
+    if spread and agg.get("repeats", 1) > 1:
+        lines += [
+            "",
+            f"Across {agg['repeats']} repeat rounds "
+            f"(temperature {agg.get('temperature')}), per-round means:",
+            "",
+            "| Metric | Mean | Min | Max | Spread |",
+            "|---|---|---|---|---|",
+        ]
+        for key, info in spread.items():
+            if key == "latency_s":
+                lines.append(
+                    f"| {info['label']} | {info['mean']:.1f} | {info['min']:.1f} | "
+                    f"{info['max']:.1f} | {info['spread']:.1f} |"
+                )
+            else:
+                lines.append(
+                    f"| {info['label']} | {_fmt_pct(info['mean'])} | "
+                    f"{_fmt_pct(info['min'])} | {_fmt_pct(info['max'])} | "
+                    f"{_fmt_pct(info['spread'])} |"
+                )
 
     lines += ["", "**Failure modes observed:**", ""]
     if agg["ungrounded_examples"]:
@@ -335,15 +417,20 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=1,
                         help="runs per ticker; >1 measures run-to-run variance")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="override the service temperature for this run; "
+                             "omit to use the configured default")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    temp_str = "service default" if args.temperature is None else str(args.temperature)
     print(f"Evaluating {len(args.tickers)} tickers x {args.repeats} "
-          f"against {args.base_url}\n")
+          f"against {args.base_url} (temperature: {temp_str})\n")
 
-    records = run(args.base_url, args.tickers, args.days, args.repeats, args.timeout)
+    records = run(args.base_url, args.tickers, args.days, args.repeats,
+                  args.timeout, args.temperature)
 
     if not any(r.get("ok") for r in records):
         print("\nEvery run failed. Is the service up? Check: "
