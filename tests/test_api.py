@@ -1,52 +1,169 @@
+"""Tests for the /analyze endpoint.
+
+Split in two:
+
+* The in-process tests drive the real FastAPI app through TestClient with the
+  orchestrator stubbed. They need no running server and no model file.
+* test_live_server_analyze talks to an actual server on localhost. It is marked
+  `integration` and FAILS when nothing is listening — it never passes silently.
+  Deselect it with:  pytest tests/ -m "not integration"
+"""
+import pytest
 import requests
-import json
-import time
+from fastapi.testclient import TestClient
 
-def test_api():
-    url = "http://127.0.0.1:8000/analyze"
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "symbol": "AAPL",
-        "days": 3
-    }
-    
-    print(f"Sending request to {url}")
-    print(f"Request data: {json.dumps(data, indent=2)}")
-    
-    max_retries = 3
-    retry_delay = 2
-    
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(url, json=data, headers=headers)
-            print(f"\nAttempt {attempt + 1}:")
-            print(f"Response status: {response.status_code}")
-            print(f"Response headers: {dict(response.headers)}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                print("\nProcessed response:")
-                print(json.dumps(result, indent=2))
-                return
-            else:
-                print(f"Response body: {response.text}")
-                
-        except requests.exceptions.ConnectionError:
-            print(f"\nConnection failed on attempt {attempt + 1}")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                print("Failed to connect after all retries")
-        except Exception as e:
-            print(f"\nError on attempt {attempt + 1}: {str(e)}")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                print("Failed after all retries")
+import main
 
-if __name__ == "__main__":
-    test_api() 
+LIVE_SERVER_URL = "http://127.0.0.1:8000/analyze"
+
+STOCK_DATA = {"symbol": "AAPL", "price": 123.45}
+NEWS_ARTICLES = [{"title": "Article one", "content": "body"}]
+SUMMARY = "a summary"
+
+
+@pytest.fixture
+def client(monkeypatch):
+    """TestClient over the real app, with the orchestrator stubbed out."""
+
+    async def fake_initialize():
+        return None
+
+    async def fake_cleanup():
+        return None
+
+    async def fake_process(input_data):
+        return {
+            "stock_data": STOCK_DATA,
+            "news_articles": NEWS_ARTICLES,
+            "summary": SUMMARY,
+            "timestamp": input_data.get("timestamp"),
+        }
+
+    monkeypatch.setattr(main.orchestrator, "initialize", fake_initialize)
+    monkeypatch.setattr(main.orchestrator, "cleanup", fake_cleanup)
+    monkeypatch.setattr(main.orchestrator, "process", fake_process)
+
+    with TestClient(main.app) as test_client:
+        yield test_client
+
+
+def test_analyze_returns_expected_payload(client):
+    response = client.post("/analyze", json={"symbol": "AAPL", "days": 3})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["stock_data"] == STOCK_DATA
+    assert body["news_articles"] == NEWS_ARTICLES
+    assert body["summary"] == SUMMARY
+    assert body["timestamp"]
+
+
+def test_symbol_reaches_the_orchestrator(client, monkeypatch):
+    seen = {}
+
+    async def capturing_process(input_data):
+        seen.update(input_data)
+        return {
+            "stock_data": STOCK_DATA,
+            "news_articles": NEWS_ARTICLES,
+            "summary": SUMMARY,
+            "timestamp": input_data.get("timestamp"),
+        }
+
+    monkeypatch.setattr(main.orchestrator, "process", capturing_process)
+
+    client.post("/analyze", json={"symbol": "MSFT", "days": 5})
+
+    assert seen["symbol"] == "MSFT"
+    assert seen["days"] == 5
+
+
+def test_days_defaults_to_one(client, monkeypatch):
+    seen = {}
+
+    async def capturing_process(input_data):
+        seen.update(input_data)
+        return {
+            "stock_data": STOCK_DATA,
+            "news_articles": NEWS_ARTICLES,
+            "summary": SUMMARY,
+            "timestamp": input_data.get("timestamp"),
+        }
+
+    monkeypatch.setattr(main.orchestrator, "process", capturing_process)
+
+    client.post("/analyze", json={"symbol": "AAPL"})
+
+    assert seen["days"] == 1
+
+
+def test_zero_days_is_rejected(client):
+    response = client.post("/analyze", json={"symbol": "AAPL", "days": 0})
+
+    assert response.status_code == 400
+    assert "Days must be greater than 0" in response.text
+
+
+def test_missing_symbol_is_rejected(client):
+    response = client.post("/analyze", json={"days": 1})
+
+    assert response.status_code == 422  # pydantic rejects before the handler
+
+
+def test_malformed_json_is_rejected(client):
+    response = client.post(
+        "/analyze",
+        content="{not json",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_orchestrator_failure_returns_500(client, monkeypatch):
+    async def failing_process(input_data):
+        raise RuntimeError("upstream is down")
+
+    monkeypatch.setattr(main.orchestrator, "process", failing_process)
+
+    response = client.post("/analyze", json={"symbol": "AAPL", "days": 1})
+
+    assert response.status_code == 500
+
+
+def test_sensitive_headers_are_redacted():
+    """Credential-bearing headers must never reach the logs in the clear."""
+    safe = main._safe_headers(
+        {
+            "Authorization": "Bearer supersecret",
+            "Cookie": "session=abc123",
+            "X-API-Key": "key-material",
+            "Content-Type": "application/json",
+        }
+    )
+
+    assert safe["Authorization"] == "<redacted>"
+    assert safe["Cookie"] == "<redacted>"
+    assert safe["X-API-Key"] == "<redacted>"
+    assert safe["Content-Type"] == "application/json"
+    assert "supersecret" not in str(safe)
+    assert "abc123" not in str(safe)
+
+
+@pytest.mark.integration
+def test_live_server_analyze():
+    """Hits a real server. Fails loudly if one is not running."""
+    try:
+        response = requests.post(
+            LIVE_SERVER_URL,
+            json={"symbol": "AAPL", "days": 3},
+            timeout=120,
+        )
+    except requests.exceptions.RequestException as exc:
+        pytest.fail(f"could not reach {LIVE_SERVER_URL}: {exc}")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) >= {"stock_data", "news_articles", "summary", "timestamp"}
+    assert isinstance(body["news_articles"], list)
+    assert isinstance(body["summary"], str) and body["summary"].strip()
