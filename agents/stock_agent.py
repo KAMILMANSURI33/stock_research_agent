@@ -87,7 +87,7 @@ class StockAgent(BaseAgent):
     
     async def cleanup(self) -> None:
         """Clean up resources."""
-        if self.session:
+        if self.session and not self.session.closed:
             await self.session.close()
-            self.session = None
+        self.session = None
         await super().cleanup() 
