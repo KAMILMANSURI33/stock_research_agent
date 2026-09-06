@@ -78,7 +78,39 @@ curl -X POST "http://localhost:8000/analyze" \
 
 ## Configuration
 
-Tunable in `config.py`: `MAX_NEWS_ARTICLES` (default 10), `MAX_TOKENS` (2048), `TEMPERATURE` (0.7), `SUMMARY_MAX_LENGTH`, and the summary prompt template.
+Tunable in `config.py`:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `MAX_NEWS_ARTICLES` | 10 | Cap on articles fetched per request |
+| `N_CTX` | 2048 | Model context window (see note below) |
+| `MAX_OUTPUT_TOKENS` | 512 | Generation budget, reserved out of `N_CTX` |
+| `PROMPT_SAFETY_MARGIN` | 128 | Headroom so a prompt measured as fitting does not land one token over |
+| `ARTICLE_CHAR_BUDGET` | 1500 | Per-article excerpt cap applied before the prompt is assembled |
+| `TEMPERATURE` | 0.7 | Sampling temperature |
+| `SUMMARY_PROMPT` | — | The summary prompt template |
+
+The prompt is budgeted against the model's own tokenizer before generation:
+articles are capped at `ARTICLE_CHAR_BUDGET`, then whole articles are dropped
+until the prompt fits `N_CTX - MAX_OUTPUT_TOKENS - PROMPT_SAFETY_MARGIN`. The
+response reports `articles_retrieved`, `articles_used`, and
+`articles_used_indices` so callers can tell which articles actually reached the
+model — grounding should be scored against those, not against `news_articles`.
+
+For evaluation, `POST /analyze` accepts `include_prompt_context: true`, which
+adds a `prompt_context` array holding the exact excerpt strings that went into
+the prompt, in prompt order and aligned with `articles_used_indices`. The field
+is omitted entirely by default, so production responses are unchanged. It
+exists because an included article may still have been cut to
+`ARTICLE_CHAR_BUDGET`: in a live AAPL run the model received 1,500 characters
+of a 21,965-character article, so scoring grounding against the full text would
+credit material it never saw.
+
+`N_CTX` stays at 2048 deliberately. TinyLlama reports `n_ctx_train = 2048`, and
+while llama-cpp accepts a larger window, with no rope scaling configured
+anything past the trained length extrapolates and output degenerates: measured
+at `n_ctx` 4096, a 253-token prompt stays coherent while a 3613-token prompt
+returns `"l  amp"`. Raising it would trade a loud error for silent gibberish.
 
 ## Model
 

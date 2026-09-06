@@ -36,6 +36,8 @@ def client(monkeypatch):
             "stock_data": STOCK_DATA,
             "news_articles": NEWS_ARTICLES,
             "articles_retrieved": len(NEWS_ARTICLES),
+            "articles_used": len(NEWS_ARTICLES),
+            "articles_used_indices": list(range(len(NEWS_ARTICLES))),
             "summary": SUMMARY,
             "timestamp": input_data.get("timestamp"),
         }
@@ -57,6 +59,8 @@ def test_analyze_returns_expected_payload(client):
     assert body["news_articles"] == NEWS_ARTICLES
     assert body["summary"] == SUMMARY
     assert body["articles_retrieved"] == len(NEWS_ARTICLES)
+    assert body["articles_used"] == len(NEWS_ARTICLES)
+    assert body["articles_used_indices"] == list(range(len(NEWS_ARTICLES)))
     assert body["timestamp"]
 
 
@@ -69,6 +73,8 @@ def test_symbol_reaches_the_orchestrator(client, monkeypatch):
             "stock_data": STOCK_DATA,
             "news_articles": NEWS_ARTICLES,
             "articles_retrieved": len(NEWS_ARTICLES),
+            "articles_used": len(NEWS_ARTICLES),
+            "articles_used_indices": list(range(len(NEWS_ARTICLES))),
             "summary": SUMMARY,
             "timestamp": input_data.get("timestamp"),
         }
@@ -90,6 +96,8 @@ def test_days_defaults_to_one(client, monkeypatch):
             "stock_data": STOCK_DATA,
             "news_articles": NEWS_ARTICLES,
             "articles_retrieved": len(NEWS_ARTICLES),
+            "articles_used": len(NEWS_ARTICLES),
+            "articles_used_indices": list(range(len(NEWS_ARTICLES))),
             "summary": SUMMARY,
             "timestamp": input_data.get("timestamp"),
         }
@@ -168,7 +176,72 @@ def test_live_server_analyze():
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) >= {"stock_data", "news_articles", "articles_retrieved", "summary", "timestamp"}
+    assert set(body) >= {
+        "stock_data", "news_articles", "articles_retrieved",
+        "articles_used", "articles_used_indices", "summary", "timestamp",
+    }
     assert body["articles_retrieved"] == len(body["news_articles"])
+    assert body["articles_used"] <= body["articles_retrieved"]
+    assert len(body["articles_used_indices"]) == body["articles_used"]
+    assert all(0 <= i < body["articles_retrieved"] for i in body["articles_used_indices"])
     assert isinstance(body["news_articles"], list)
     assert isinstance(body["summary"], str) and body["summary"].strip()
+
+
+def test_prompt_context_absent_by_default(client):
+    """Production responses must be unchanged by the evaluation opt-in."""
+    response = client.post("/analyze", json={"symbol": "AAPL", "days": 1})
+
+    assert response.status_code == 200, response.text
+    assert "prompt_context" not in response.json()
+
+
+def test_prompt_context_returned_when_requested(client, monkeypatch):
+    excerpts = ["excerpt one", "excerpt two"]
+
+    async def process_with_context(input_data):
+        assert input_data["include_prompt_context"] is True
+        return {
+            "stock_data": STOCK_DATA,
+            "news_articles": NEWS_ARTICLES,
+            "articles_retrieved": len(NEWS_ARTICLES),
+            "articles_used": len(excerpts),
+            "articles_used_indices": list(range(len(excerpts))),
+            "prompt_context": excerpts,
+            "summary": SUMMARY,
+            "timestamp": input_data.get("timestamp"),
+        }
+
+    monkeypatch.setattr(main.orchestrator, "process", process_with_context)
+
+    response = client.post(
+        "/analyze",
+        json={"symbol": "AAPL", "days": 1, "include_prompt_context": True},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["prompt_context"] == excerpts
+    assert len(body["prompt_context"]) == body["articles_used"]
+
+
+def test_include_prompt_context_defaults_to_false(client, monkeypatch):
+    seen = {}
+
+    async def capturing_process(input_data):
+        seen.update(input_data)
+        return {
+            "stock_data": STOCK_DATA,
+            "news_articles": NEWS_ARTICLES,
+            "articles_retrieved": len(NEWS_ARTICLES),
+            "articles_used": len(NEWS_ARTICLES),
+            "articles_used_indices": list(range(len(NEWS_ARTICLES))),
+            "summary": SUMMARY,
+            "timestamp": input_data.get("timestamp"),
+        }
+
+    monkeypatch.setattr(main.orchestrator, "process", capturing_process)
+
+    client.post("/analyze", json={"symbol": "AAPL", "days": 1})
+
+    assert seen["include_prompt_context"] is False

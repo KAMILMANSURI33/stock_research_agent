@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+from typing import List, Optional
 from datetime import datetime
 from agents.orchestrator import Orchestrator
+from agents.llm_agent import PromptTooLargeError
 import uvicorn
 import logging
 import json
@@ -24,13 +26,20 @@ def _safe_headers(headers) -> dict:
 class AnalysisRequest(BaseModel):
     symbol: str
     days: int = 1
+    # Evaluation aid: return the exact excerpts that went into the prompt.
+    # Off by default so production responses are unchanged.
+    include_prompt_context: bool = False
 
 class AnalysisResponse(BaseModel):
     stock_data: dict
     news_articles: list
     articles_retrieved: int
+    articles_used: int
+    articles_used_indices: list
     summary: str
     timestamp: str
+    # Omitted from the response unless include_prompt_context was requested.
+    prompt_context: Optional[List[str]] = None
 
 app = FastAPI(
     title="Stock News AI Agent",
@@ -61,7 +70,7 @@ async def shutdown_event():
     await orchestrator.cleanup()
     logger.info("Cleanup completed")
 
-@app.post("/analyze", response_model=AnalysisResponse)
+@app.post("/analyze", response_model=AnalysisResponse, response_model_exclude_none=True)
 async def analyze_stock(request: AnalysisRequest, raw_request: Request):
     try:
         # Log the incoming request
@@ -78,6 +87,7 @@ async def analyze_stock(request: AnalysisRequest, raw_request: Request):
         result = await orchestrator.process({
             "symbol": request.symbol,
             "days": request.days,
+            "include_prompt_context": request.include_prompt_context,
             "timestamp": datetime.now().isoformat()
         })
         
@@ -90,6 +100,11 @@ async def analyze_stock(request: AnalysisRequest, raw_request: Request):
     except HTTPException:
         # Already carries an intended status code — don't remap it to a 500 below.
         raise
+    except PromptTooLargeError as e:
+        # Budgeting could not make the articles fit. Say so explicitly instead
+        # of surfacing a llama-cpp ValueError.
+        logger.error(f"Prompt budget exceeded: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")

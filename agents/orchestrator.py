@@ -34,19 +34,32 @@ class Orchestrator(BaseAgent):
             'articles': [article['content'] for article in news_data]
         }
         
-        # Generate summary using LLM
-        summary = await self.llm_agent.process(llm_input)
+        # Generate summary using LLM. It reports how many of the retrieved
+        # articles actually fit the model's context window.
+        llm_result = await self.llm_agent.process(llm_input)
         
         # Combine all results
-        return {
+        result = {
             'stock_data': stock_data,
             'news_articles': news_data,
             # Explicit so a caller can tell a grounded summary from an empty
             # one without re-deriving it from the articles list.
             'articles_retrieved': len(news_data),
-            'summary': summary,
+            'articles_used': llm_result['articles_used'],
+            # Which retrieved articles actually reached the prompt. Grounding
+            # must be scored against these, not against news_articles.
+            'articles_used_indices': llm_result['articles_used_indices'],
+            'summary': llm_result['summary'],
             'timestamp': input_data.get('timestamp', None)
         }
+
+        # Opt-in only: the exact prompt excerpts are for evaluation, so a
+        # harness need not reimplement truncation and drift from it. Omitted
+        # entirely by default, leaving production responses unchanged.
+        if input_data.get('include_prompt_context'):
+            result['prompt_context'] = llm_result['prompt_context']
+
+        return result
     
     async def cleanup(self) -> None:
         """Clean up all sub-agents."""

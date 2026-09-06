@@ -38,7 +38,13 @@ def _make_orchestrator():
 
     async def fake_llm(input_data):
         llm_calls.append(input_data)
-        return SUMMARY_RESULT
+        n = len(input_data.get("articles", []))
+        return {
+            "summary": SUMMARY_RESULT,
+            "articles_used": n,
+            "articles_used_indices": list(range(n)),
+            "prompt_context": [a["content"] for a in NEWS_RESULT[:n]],
+        }
 
     orchestrator.stock_agent.process = fake_stock
     orchestrator.web_search_agent.process = fake_news
@@ -77,6 +83,8 @@ async def test_results_map_to_correct_keys():
     assert result["stock_data"] == STOCK_RESULT
     assert result["news_articles"] == NEWS_RESULT
     assert result["articles_retrieved"] == len(NEWS_RESULT)
+    assert result["articles_used"] == len(NEWS_RESULT)
+    assert result["articles_used_indices"] == list(range(len(NEWS_RESULT)))
     assert result["summary"] == SUMMARY_RESULT
 
 
@@ -140,6 +148,29 @@ async def test_empty_news_yields_zero_count_and_no_generated_summary():
     result = await orchestrator.process({"symbol": "AAPL", "days": 1})
 
     assert result["articles_retrieved"] == 0
+    assert result["articles_used"] == 0
+    assert result["articles_used_indices"] == []
     assert result["news_articles"] == []
     assert result["summary"] == NO_ARTICLES_SUMMARY.format(symbol="AAPL")
     assert orchestrator.llm_agent.model is None
+
+
+@pytest.mark.asyncio
+async def test_prompt_context_is_omitted_unless_requested():
+    orchestrator, _ = _make_orchestrator()
+
+    result = await orchestrator.process({"symbol": "AAPL", "days": 1})
+
+    assert "prompt_context" not in result
+
+
+@pytest.mark.asyncio
+async def test_prompt_context_included_when_requested():
+    orchestrator, _ = _make_orchestrator()
+
+    result = await orchestrator.process(
+        {"symbol": "AAPL", "days": 1, "include_prompt_context": True}
+    )
+
+    assert result["prompt_context"] == [a["content"] for a in NEWS_RESULT]
+    assert len(result["prompt_context"]) == result["articles_used"]
