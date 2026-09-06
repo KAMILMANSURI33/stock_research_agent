@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, List
 from .base_agent import BaseAgent
 from .web_search_agent import WebSearchAgent
@@ -21,11 +22,11 @@ class Orchestrator(BaseAgent):
     
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process the input using all sub-agents and combine results."""
-        # Get stock market data
-        stock_data = await self.stock_agent.process(input_data)
-        
-        # Get news articles
-        news_data = await self.web_search_agent.process(input_data)
+        # Get stock market data and news articles concurrently
+        stock_data, news_data = await asyncio.gather(
+            self.stock_agent.process(input_data),
+            self.web_search_agent.process(input_data)
+        )
         
         # Prepare data for LLM processing
         llm_input = {
