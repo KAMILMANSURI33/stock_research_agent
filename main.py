@@ -84,6 +84,9 @@ async def analyze_stock(request: AnalysisRequest, raw_request: Request):
         
         logger.info("Successfully processed request")
         return result
+    except HTTPException:
+        # Already carries an intended status code — don't remap it to a 500 below.
+        raise
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
