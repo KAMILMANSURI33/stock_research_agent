@@ -11,3 +11,10 @@ uvicorn==0.27.1
 pydantic==2.6.1
 tenacity==8.2.3
 aiohttp==3.9.3 
+
+# Test dependencies. The README tells contributors to run pytest, so these
+# belong here rather than being assumed present in the ambient environment.
+pytest==8.4.2
+pytest-asyncio==1.2.0
+# starlette 0.35.x TestClient passes app= to httpx.Client, removed in httpx 0.28
+httpx>=0.27,<0.28
