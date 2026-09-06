@@ -11,6 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Headers that may carry credentials and must never be logged
+SENSITIVE_HEADERS = {"authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"}
+
+def _safe_headers(headers) -> dict:
+    """Return headers with credential-bearing values redacted."""
+    return {
+        k: ("<redacted>" if k.lower() in SENSITIVE_HEADERS else v)
+        for k, v in headers.items()
+    }
+
 class AnalysisRequest(BaseModel):
     symbol: str
     days: int = 1
@@ -52,9 +62,8 @@ async def shutdown_event():
 async def analyze_stock(request: AnalysisRequest, raw_request: Request):
     try:
         # Log the incoming request
-        body = await raw_request.body()
-        logger.info(f"Request headers: {raw_request.headers}")
-        logger.info(f"Received request body: {body.decode()}")
+        logger.debug(f"Request headers: {_safe_headers(raw_request.headers)}")
+        logger.debug(f"Received request body: {(await raw_request.body()).decode()}")
         logger.info(f"Parsed request: symbol={request.symbol}, days={request.days}")
 
         # Validate request data
