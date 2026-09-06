@@ -33,6 +33,7 @@ class AnalysisRequest(BaseModel):
 class AnalysisResponse(BaseModel):
     stock_data: dict
     news_articles: list
+    stock_data_source: Optional[dict] = None
     articles_retrieved: int
     articles_used: int
     articles_used_indices: list

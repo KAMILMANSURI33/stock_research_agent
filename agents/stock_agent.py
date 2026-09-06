@@ -68,7 +68,24 @@ class StockAgent(BaseAgent):
         # Get additional market data from Alpha Vantage
         av_data = await self._fetch_alpha_vantage_data(symbol)
         quote = av_data.get('Global Quote', {})
-        
+
+        # Neither source raises on failure: yfinance swallows its exception and
+        # Alpha Vantage answers a spent quota with HTTP 200 and a note. Both
+        # then degrade to empty strings and zeros, which is indistinguishable
+        # from a genuine zero. Record which source actually supplied each half.
+        av_note = (
+            av_data.get('Note')
+            or av_data.get('Information')
+            or av_data.get('Error Message')
+        )
+        if not yf_data:
+            logger.warning(f"yfinance returned no profile data for {symbol}")
+        if not quote:
+            logger.warning(
+                f"Alpha Vantage returned no quote for {symbol}"
+                + (f": {av_note}" if av_note else "")
+            )
+
         result = {
             'symbol': symbol,
             'name': yf_data.get('name', ''),
@@ -79,7 +96,12 @@ class StockAgent(BaseAgent):
             'dividend_yield': yf_data.get('dividend_yield', 0),
             'price': float(quote.get('05. price', 0) or 0),
             'change_percent': float(quote.get('10. change percent', '0%').strip('%') or 0),
-            'volume': int(quote.get('06. volume', 0) or 0)
+            'volume': int(quote.get('06. volume', 0) or 0),
+            'source': {
+                'profile': 'yfinance' if yf_data else 'unavailable',
+                'quote': 'alphavantage' if quote else 'unavailable',
+                'alphavantage_note': av_note,
+            },
         }
         
         logger.info(f"Successfully fetched data for {symbol}")

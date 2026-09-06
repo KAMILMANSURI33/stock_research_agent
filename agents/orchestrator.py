@@ -28,6 +28,12 @@ class Orchestrator(BaseAgent):
             self.web_search_agent.process(input_data)
         )
         
+        # Lift the provenance marker out of stock_data so the payload shape
+        # stays as callers expect, with the source reported alongside it.
+        stock_data_source = (
+            stock_data.pop('source', None) if isinstance(stock_data, dict) else None
+        )
+
         # Prepare data for LLM processing
         llm_input = {
             'symbol': input_data['symbol'],
@@ -41,6 +47,9 @@ class Orchestrator(BaseAgent):
         # Combine all results
         result = {
             'stock_data': stock_data,
+            # Which upstream supplied each half of stock_data. Both fail
+            # silently, so an exhausted quota is otherwise invisible.
+            'stock_data_source': stock_data_source,
             'news_articles': news_data,
             # Explicit so a caller can tell a grounded summary from an empty
             # one without re-deriving it from the articles list.
