@@ -272,14 +272,14 @@ def aggregate(records: list[dict]) -> dict:
             e for r in ok for e in r.get("unsourced_entities", [])
         })[:12],
         # per-run evidence, so the coverage narrative is not inferred from means
-        "low_coverage_without_drops": [
+        "low_coverage_without_drops": sorted({
             r["ticker"] for r in ok
             if (r.get("coverage_rate") or 0) < 0.6 and not r.get("drop_rate")
-        ],
-        "low_coverage_with_drops": [
+        }),
+        "low_coverage_with_drops": sorted({
             r["ticker"] for r in ok
             if (r.get("coverage_rate") or 0) < 0.6 and r.get("drop_rate")
-        ],
+        }),
         "failures": [{"ticker": r["ticker"], "error": r.get("error")} for r in failed],
         "temperature": next((r.get("temperature") for r in ok if r.get("temperature") is not None), None),
         "repeats": len({r.get("repeat_index", 0) for r in ok}),
@@ -399,12 +399,26 @@ def to_markdown(agg: dict, days: int) -> str:
     if not lines[-1].startswith("-"):
         lines.append("- None recorded.")
 
+    temp = agg.get("temperature")
+    temp_flag = "" if temp is None else f" --temperature {temp}"
+    if temp == 0:
+        pipeline_note = (
+            "Generation ran at temperature 0, so repeat rounds over an unchanged "
+            "news feed reproduce: measured spread across rounds was at most 1 "
+            "point. The feed itself still moves between sessions."
+        )
+    else:
+        pipeline_note = (
+            f"The pipeline they score is not deterministic: generation ran at "
+            f"temperature {temp} over a live news feed, so re-running moves the "
+            f"numbers."
+        )
+
     lines += [
         "",
-        f"_Reproduce with `python evals/run_eval.py --days {days}`. "
-        "All metrics are deterministic and rule-based; no judge model is involved. "
-        "The pipeline they score is not deterministic: generation runs at "
-        "TEMPERATURE 0.7 over a live news feed, so re-running moves the numbers._",
+        f"_Reproduce with `python evals/run_eval.py --days {days}"
+        f"{temp_flag}`. All metrics are deterministic and rule-based; no judge "
+        f"model is involved. {pipeline_note}_",
     ]
     return "\n".join(lines)
 

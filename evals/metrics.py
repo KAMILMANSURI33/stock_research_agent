@@ -148,6 +148,10 @@ _NON_COMPANY = {
     "WHILE", "SINCE", "DURING", "FOLLOWING", "GIVEN", "THIS", "THAT", "THESE",
     "THOSE", "THERE", "THEIR", "THEY", "WITH", "WITHOUT", "AFTER", "BEFORE",
     "BOTH", "EACH", "MOST", "MANY", "SOME", "OTHER", "OTHERS", "SUCH",
+    # generic market nouns that name no organisation on their own
+    "INDEX", "AVERAGE", "COMPOSITE", "SHARE", "SHARES", "STOCK", "STOCKS",
+    "MARKET", "MARKETS", "QUARTER", "GROWTH", "MARGIN", "MARGINS", "GUIDANCE",
+    "PRICE", "TARGET", "SALES", "INCOME", "EQUITY", "MONEY", "BANK",
 }
 
 # Title Case (Apple, Nvidia) and ALL CAPS runs (AAPL, IBM) are both how a
@@ -168,6 +172,31 @@ _ALL_CAPS = re.compile(r"\b[A-Z]{2,6}\b")
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 _EDGE = ".,;:!?'\"()[]{}*-"
+
+
+# Applied to every word, not just the last: "Microsoft's Azure" must normalise
+# to "Microsoft Azure" or it never matches the sourced form.
+_POSSESSIVE = re.compile(r"['\u2019]s\b")
+
+
+def _strip_possessive(text: str) -> str:
+    return _POSSESSIVE.sub("", text).strip()
+
+
+def _expands_source_acronym(phrase: str, src_upper: str) -> bool:
+    """True when the phrase spells out an acronym present in the sources.
+
+    "Earnings Per Share" -> EPS, "Graphics Processing Unit" -> GPU. Writing a
+    term out in full is a reference to it, not an invented entity, so flagging
+    it as unsourced misreports ordinary prose as hallucination.
+    """
+    words = [w for w in re.split(r"[\s&]+", phrase) if w]
+    if len(words) < 2:
+        return False
+    initials = "".join(w[0] for w in words).upper()
+    if len(initials) < 2:
+        return False
+    return bool(re.search(rf"\b{re.escape(initials)}\b", src_upper))
 
 
 def _sentence_initial_only(text: str, candidates: set) -> set:
@@ -201,8 +230,17 @@ def entity_fidelity(summary: str, requested: str, sources: str) -> Dict[str, Any
     phrases = {m.group(0).strip() for m in _TITLE_PHRASE.finditer(summary)}
     candidates = {p for p in phrases if p} | set(_ALL_CAPS.findall(summary))
 
+    # Possessives are the same entity: "Microsoft's" must not be counted
+    # separately from "Microsoft", nor flagged when "Microsoft" is sourced.
+    candidates = {_strip_possessive(c) for c in candidates}
+    candidates = {c for c in candidates if c}
+
     # 1. anything the sources actually contain is sourced, by definition
     unsourced = {c for c in candidates if c.upper() not in src_upper}
+    # 1b. an expansion of an acronym in the sources is sourced too:
+    #     "Graphics Processing Unit" where the sources say GPU is a spelled-out
+    #     reference, not a fabricated organisation.
+    unsourced = {c for c in unsourced if not _expands_source_acronym(c, src_upper)}
     # 2. capitalised only because it starts a sentence. Applied to single words
     #    only: a multi-word phrase is not capitalised for position.
     single = {c for c in unsourced if " " not in c}
