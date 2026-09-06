@@ -112,41 +112,90 @@ def numeric_grounding(summary: str, sources: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 2. ticker fidelity
+# 2. entity fidelity
 # ---------------------------------------------------------------------------
 
-# common all-caps words that look like tickers but aren't
-_TICKER_STOPWORDS = {
-    "AI", "CEO", "CFO", "COO", "CTO", "EPS", "ETF", "GDP", "IPO", "IRS",
-    "SEC", "USA", "US", "UK", "EU", "FDA", "FED", "Q1", "Q2", "Q3", "Q4",
-    "YOY", "QOQ", "NYSE", "NASDAQ", "AND", "THE", "FOR", "NEW", "ALL",
+# Words that are capitalised but are not organisations. This is the LAST
+# filter, applied only to candidates that already survived the source check and
+# the sentence-initial check, so it stays small and does not need to anticipate
+# every acronym a new corpus might contain.
+_NON_COMPANY = {
+    # role / finance / filing vocabulary
+    "CEO", "CFO", "COO", "CTO", "CIO", "EPS", "ETF", "GDP", "IPO", "IRS",
+    "SEC", "FDA", "FED", "FOMC", "ISM", "PMI", "CPI", "PPI", "YOY", "QOQ",
+    "EBITDA", "PBT", "ROI", "ROE", "KPI", "GAAP", "MOU", "IPO", "AGM",
+    "Q1", "Q2", "Q3", "Q4", "FY", "H1", "H2",
+    # technology vocabulary
+    "AI", "ML", "API", "AWS", "GPU", "CPU", "TPU", "VRAM", "RAM", "OS",
+    "PC", "IT", "SDK", "LLM", "SAAS", "IAAS", "PAAS", "HBM", "DRAM", "NAND",
+    "5G", "4G", "VR", "AR", "IOT", "EV",
+    # places, markets, misc
+    "USA", "US", "UK", "EU", "UAE", "NYSE", "NASDAQ", "SP", "DJIA", "FTSE",
+    "COVID", "WHO", "OPEC", "NATO", "GMT", "UTC", "ET", "EST", "PST", "PDT",
+    "AM", "PM", "CET",
+    # calendar
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST",
+    "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY",
+    "SUNDAY",
+    # capitalised English that survives sentence-initial filtering
+    "THE", "AND", "FOR", "NEW", "ALL", "ANALYSTS", "INVESTORS", "EARNINGS",
+    "REVENUE", "OVERALL", "ADDITIONALLY", "HOWEVER", "CONCLUSION", "SUMMARY",
+    "KEY", "FACTS", "METRICS", "OUTLOOK", "STREET", "WALL",
 }
 
-_TICKER = re.compile(r"\b[A-Z]{2,5}\b")
+# Title Case (Apple, Nvidia) and ALL CAPS runs (AAPL, IBM) are both how a
+# company can appear. Matching only ALL CAPS was what produced false positives
+# on acronyms while missing "Apple" entirely.
+_TITLE_CASE = re.compile(r"\b[A-Z][a-z]{2,}\b")
+_ALL_CAPS = re.compile(r"\b[A-Z]{2,6}\b")
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_EDGE = ".,;:!?'\"()[]{}*-"
 
 
-def ticker_fidelity(summary: str, requested: str, sources: str) -> Dict[str, Any]:
+def _sentence_initial_only(text: str, candidates: set) -> set:
+    """Candidates that only ever appear as the first word of a sentence.
+
+    "Investors will watch..." capitalises Investors for position, not because
+    it names anything. A real entity almost always also appears mid-sentence.
     """
-    The summary should be about the ticker that was asked for, and shouldn't
-    invent other tickers. Drifting onto a company that appears nowhere in the
-    sources is a distinct and serious failure.
+    initial, medial = set(), set()
+    for sentence in _SENTENCE_SPLIT.split(text):
+        words = [w.strip(_EDGE) for w in sentence.strip().split()]
+        words = [w for w in words if w]
+        if not words:
+            continue
+        initial.add(words[0])
+        medial.update(words[1:])
+    return {c for c in candidates if c in initial and c not in medial}
+
+
+def entity_fidelity(summary: str, requested: str, sources: str) -> Dict[str, Any]:
+    """Named entities in the summary that appear nowhere in the source text.
+
+    The honest claim this supports is "the summary named something absent from
+    its sources", not "the model invented a ticker": the extractor cannot tell
+    a ticker from any other proper noun, and pretending otherwise is what made
+    the previous version report acronyms as fabricated companies.
     """
     requested = requested.upper()
     src_upper = sources.upper()
 
-    mentioned = {
-        t for t in _TICKER.findall(summary)
-        if t not in _TICKER_STOPWORDS and t != requested
-    }
-    invented = sorted(t for t in mentioned if t not in src_upper)
+    candidates = set(_TITLE_CASE.findall(summary)) | set(_ALL_CAPS.findall(summary))
+
+    # 1. anything the sources actually contain is sourced, by definition
+    unsourced = {c for c in candidates if c.upper() not in src_upper}
+    # 2. capitalised only because it starts a sentence
+    unsourced -= _sentence_initial_only(summary, unsourced)
+    # 3. last resort: known non-company vocabulary
+    unsourced = {c for c in unsourced if c.upper() not in _NON_COMPANY}
+    unsourced.discard(requested)
 
     return {
         "requested_ticker_present": requested in summary.upper(),
-        "other_tickers_mentioned": sorted(mentioned),
-        "invented_tickers": invented,
-        # cleanliness is about not inventing companies. Writing "Apple"
-        # rather than "AAPL" is normal prose, not an error.
-        "ticker_clean": not invented,
+        "unsourced_entities": sorted(unsourced),
+        "entities_clean": not unsourced,
     }
 
 
@@ -262,7 +311,7 @@ def score_one(summary: str, articles: Sequence[str], ticker: str) -> Dict[str, A
     sources = "\n\n".join(articles)
     result: Dict[str, Any] = {"ticker": ticker}
     result.update(numeric_grounding(summary, sources))
-    result.update(ticker_fidelity(summary, ticker, sources))
+    result.update(entity_fidelity(summary, ticker, sources))
     result.update(extractiveness(summary, sources))
     result.update(degeneracy(summary))
     result.update(article_coverage(summary, articles))

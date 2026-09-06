@@ -183,7 +183,10 @@ def aggregate(records: list[dict]) -> dict:
         # more than one with a single number
         "numeric_grounding_rate": (numbers_grounded / numbers_total) if numbers_total else None,
         "numbers_total": numbers_total,
-        "ticker_clean_rate": _mean([1.0 if r.get("ticker_clean") else 0.0 for r in ok]),
+        "entities_clean_rate": _mean([1.0 if r.get("entities_clean") else 0.0 for r in ok]),
+        "requested_ticker_rate": _mean(
+            [1.0 if r.get("requested_ticker_present") else 0.0 for r in ok]
+        ),
         "coverage_rate": _mean([r.get("coverage_rate") for r in ok]),
         "extractive_rate": _mean([r.get("extractive_rate") for r in ok]),
         "degenerate_rate": _mean([1.0 if r.get("degenerate") else 0.0 for r in ok]),
@@ -192,9 +195,34 @@ def aggregate(records: list[dict]) -> dict:
             sorted(r["latency_s"] for r in records)[int(0.9 * len(records))]
             if len(records) >= 10 else None
         ),
+        # Both upstreams fail silently, so availability is tracked per run.
+        "stock_profile_available_rate": _mean([
+            1.0 if (r.get("stock_data_source") or {}).get("profile") == "yfinance" else 0.0
+            for r in ok
+        ]),
+        "stock_quote_available_rate": _mean([
+            1.0 if (r.get("stock_data_source") or {}).get("quote") == "alphavantage" else 0.0
+            for r in ok
+        ]),
+        "alphavantage_notes": sorted({
+            note for r in ok
+            if (note := (r.get("stock_data_source") or {}).get("alphavantage_note"))
+        }),
         "ungrounded_examples": sorted({
             n for r in ok for n in r.get("ungrounded_numbers", [])
         })[:10],
+        "unsourced_entity_examples": sorted({
+            e for r in ok for e in r.get("unsourced_entities", [])
+        })[:12],
+        # per-run evidence, so the coverage narrative is not inferred from means
+        "low_coverage_without_drops": [
+            r["ticker"] for r in ok
+            if (r.get("coverage_rate") or 0) < 0.6 and not r.get("drop_rate")
+        ],
+        "low_coverage_with_drops": [
+            r["ticker"] for r in ok
+            if (r.get("coverage_rate") or 0) < 0.6 and r.get("drop_rate")
+        ],
         "failures": [{"ticker": r["ticker"], "error": r.get("error")} for r in failed],
     }
 
@@ -211,13 +239,19 @@ def to_markdown(agg: dict, days: int) -> str:
         "|---|---|",
         f"| Numeric grounding (figures traceable to a source article) | "
         f"{_fmt_pct(agg['numeric_grounding_rate'])} ({agg['numbers_total']} figures checked) |",
-        f"| Ticker fidelity (correct ticker, none invented) | {_fmt_pct(agg['ticker_clean_rate'])} |",
+        f"| Entity fidelity (no entity named that is absent from sources) | "
+        f"{_fmt_pct(agg['entities_clean_rate'])} |",
+        f"| Requested ticker named in summary | {_fmt_pct(agg['requested_ticker_rate'])} |",
         f"| Article coverage (retrieved articles reflected in summary) | {_fmt_pct(agg['coverage_rate'])} |",
         f"| Extractive rate (8-grams copied verbatim) | {_fmt_pct(agg['extractive_rate'])} |",
         f"| Degenerate outputs (looping or collapsed) | {_fmt_pct(agg['degenerate_rate'])} |",
         f"| Article drop rate (retrieved but not sent to the model) | "
         f"{_fmt_pct(agg['drop_rate_mean'])} "
         f"({agg['articles_used_total']}/{agg['articles_retrieved_total']} used) |",
+        f"| Stock quote fields populated (Alpha Vantage) | "
+        f"{_fmt_pct(agg['stock_quote_available_rate'])} |",
+        f"| Stock profile fields populated (yfinance) | "
+        f"{_fmt_pct(agg['stock_profile_available_rate'])} |",
         f"| Median end-to-end latency | {agg['latency_median_s']:.1f} s |",
     ]
     if agg.get("latency_p90_s"):
@@ -235,6 +269,24 @@ def to_markdown(agg: dict, days: int) -> str:
             "or vocabulary collapse, the characteristic failure of the 1B model "
             "on long article sets."
         )
+    if agg.get("unsourced_entity_examples"):
+        lines.append(
+            "- Entities named but absent from the source excerpts: "
+            + ", ".join(f"`{e}`" for e in agg["unsourced_entity_examples"])
+        )
+    if agg.get("stock_profile_available_rate") is not None and agg["stock_profile_available_rate"] < 1.0:
+        lines.append(
+            f"- yfinance supplied profile data on only "
+            f"{_fmt_pct(agg['stock_profile_available_rate'])} of runs. The remaining "
+            "responses served `name`, `sector` and `industry` as empty strings and "
+            "`market_cap`, `pe_ratio` and `dividend_yield` as 0, which is "
+            "indistinguishable from a genuine zero to a caller."
+        )
+    if agg.get("alphavantage_notes"):
+        lines.append(
+            "- Alpha Vantage returned advisory notes (usually quota): "
+            + "; ".join(f"`{n[:90]}`" for n in agg["alphavantage_notes"])
+        )
     if agg["failures"]:
         errors = {f["error"] for f in agg["failures"]}
         lines.append(f"- {len(agg['failures'])} run(s) failed: {'; '.join(sorted(errors))}")
@@ -244,10 +296,23 @@ def to_markdown(agg: dict, days: int) -> str:
             "before generation to fit the 2048-token context window; grounding is "
             "scored only against the excerpts the model actually received."
         )
-    if agg["coverage_rate"] is not None and agg["coverage_rate"] < 0.6:
+    # Attribute low coverage per run, not from the pooled means: a run can drop
+    # articles and still cover well, so averaging the two hides which cause
+    # applies where.
+    no_drop = agg.get("low_coverage_without_drops") or []
+    with_drop = agg.get("low_coverage_with_drops") or []
+    if no_drop:
         lines.append(
-            "- Low article coverage suggests later articles are being truncated "
-            "out of the 2048-token context window."
+            f"- Low article coverage with no articles dropped ({', '.join(no_drop)}): "
+            "every retrieved article was sent to the model and most still left no "
+            "trace in the summary. That is the model not using its context, not "
+            "truncation."
+        )
+    if with_drop:
+        lines.append(
+            f"- Low article coverage where articles were also dropped "
+            f"({', '.join(with_drop)}): truncation is a contributing cause for "
+            "these runs only."
         )
     if not lines[-1].startswith("-"):
         lines.append("- None recorded.")
@@ -255,7 +320,9 @@ def to_markdown(agg: dict, days: int) -> str:
     lines += [
         "",
         f"_Reproduce with `python evals/run_eval.py --days {days}`. "
-        "All metrics are deterministic and rule-based; no judge model is involved._",
+        "All metrics are deterministic and rule-based; no judge model is involved. "
+        "The pipeline they score is not deterministic: generation runs at "
+        "TEMPERATURE 0.7 over a live news feed, so re-running moves the numbers._",
     ]
     return "\n".join(lines)
 
