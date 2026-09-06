@@ -37,7 +37,8 @@ class Orchestrator(BaseAgent):
         # Prepare data for LLM processing
         llm_input = {
             'symbol': input_data['symbol'],
-            'articles': [article['content'] for article in news_data]
+            'articles': [article['content'] for article in news_data],
+            'temperature': input_data.get('temperature'),
         }
         
         # Generate summary using LLM. It reports how many of the retrieved
@@ -59,6 +60,7 @@ class Orchestrator(BaseAgent):
             # must be scored against these, not against news_articles.
             'articles_used_indices': llm_result['articles_used_indices'],
             'summary': llm_result['summary'],
+            'temperature': llm_result.get('temperature'),
             'timestamp': input_data.get('timestamp', None)
         }
 

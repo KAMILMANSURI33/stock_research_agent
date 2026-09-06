@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 from agents.orchestrator import Orchestrator
@@ -29,6 +29,10 @@ class AnalysisRequest(BaseModel):
     # Evaluation aid: return the exact excerpts that went into the prompt.
     # Off by default so production responses are unchanged.
     include_prompt_context: bool = False
+    # Evaluation aid: override config.TEMPERATURE for this request only. The
+    # harness drives a live server, so without this a temperature sweep would
+    # mean restarting the service between runs.
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
 
 class AnalysisResponse(BaseModel):
     stock_data: dict
@@ -41,6 +45,8 @@ class AnalysisResponse(BaseModel):
     timestamp: str
     # Omitted from the response unless include_prompt_context was requested.
     prompt_context: Optional[List[str]] = None
+    # The temperature actually used, so a recorded run is self-describing.
+    temperature: Optional[float] = None
 
 app = FastAPI(
     title="Stock News AI Agent",
@@ -89,6 +95,7 @@ async def analyze_stock(request: AnalysisRequest, raw_request: Request):
             "symbol": request.symbol,
             "days": request.days,
             "include_prompt_context": request.include_prompt_context,
+            "temperature": request.temperature,
             "timestamp": datetime.now().isoformat()
         })
         

@@ -118,11 +118,16 @@ class LLMAgent(BaseAgent):
 
         prompt, used_indices, used_excerpts = self.build_prompt(symbol, articles)
 
+        # None means "use the configured default"; 0.0 is a real value and must
+        # not be collapsed into the default by a truthiness check.
+        requested_temp = input_data.get('temperature')
+        temperature = TEMPERATURE if requested_temp is None else float(requested_temp)
+
         # Generate response
         response = self.model.create_completion(
             prompt,
             max_tokens=MAX_OUTPUT_TOKENS,
-            temperature=TEMPERATURE,
+            temperature=temperature,
             stop=["###"]
         )
 
@@ -134,6 +139,7 @@ class LLMAgent(BaseAgent):
             # aligned with articles_used_indices. Carried always; the API layer
             # decides whether to expose it.
             "prompt_context": used_excerpts,
+            "temperature": temperature,
         }
 
     async def cleanup(self) -> None:
