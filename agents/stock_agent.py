@@ -1,5 +1,5 @@
 import yfinance as yf
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from .base_agent import BaseAgent
 from config import ALPHAVANTAGE_API_KEY
 import aiohttp

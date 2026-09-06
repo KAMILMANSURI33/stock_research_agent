@@ -1,5 +1,5 @@
 import aiohttp
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from newspaper import Article
 from .base_agent import BaseAgent

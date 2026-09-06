@@ -56,7 +56,9 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    logger.info("Cleaning up resources...")
     await orchestrator.cleanup()
+    logger.info("Cleanup completed")
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_stock(request: AnalysisRequest, raw_request: Request):
