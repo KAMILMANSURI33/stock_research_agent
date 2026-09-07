@@ -23,21 +23,6 @@ POST /analyze  {"symbol": "AAPL", "days": 1}
 
 **Prompt is structured, not freeform.** The summary prompt directs the model at market-moving events, financial metrics, sentiment, and outlook, rather than asking for an open-ended summary. Configurable in `config.py`.
 
-## Results
-
-<!-- FILL THIS IN. This section is why someone keeps reading. -->
-
-Evaluated on __ articles across __ tickers:
-
-| Metric | Score |
-|---|---|
-| Grounding (claims traceable to a source article) | __% |
-| Ticker / figure accuracy | __% |
-| Summary usefulness (1–5 rubric, mean) | __ |
-| Median end-to-end latency | __ s |
-
-Failure modes observed: __
-
 ## Setup
 
 **1. Dependencies**
